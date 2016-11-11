@@ -1,0 +1,2 @@
+#define WIFINAME ""
+#define PASSWORD ""
