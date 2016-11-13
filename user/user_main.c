@@ -13,44 +13,112 @@
 #include "utils/utils.h"
 #include "websockets.h"
 
+#define PINGDELAY 5000
 
 struct espconn espconnection;
 esp_tcp tcpconn;
-struct espconn *connection_collection [5];
+struct espconn *connection_collection;
 uint8 connection_counter = 0;
+os_timer_t timer_struct;
+os_timer_t testTimer;
+
+long int counter;
+
+static void ICACHE_FLASH_ATTR testBandwidth() {
+	counter++;
+
+	if(connection_collection !=NULL) {
+		while(!sendMessage("123456789*123456789*123456789*123456789",connection_collection));
+		if (counter > 20) {
+			os_timer_disarm(&testTimer);
+			counter = 0;
+			os_printf("Testing stopped\n");
+		} else {
+		}
+	}
+	else
+		os_printf("no connections to ping\n");
+
+
+}
+
+static void ICACHE_FLASH_ATTR ping () {
+	if(connection_collection !=NULL) {
+		while(!sendPing(connection_collection));
+		os_printf("pinged \""IPSTR"\" :%d \n", IP2STR(connection_collection->proto.tcp->remote_ip), connection_collection->proto.tcp->remote_port);
+	}
+	else
+		os_printf("no connections to ping\n");
+}
+
 static void ICACHE_FLASH_ATTR dataRecived (void *args, char *pusrdata, unsigned short length) {
     struct espconn *recivedConnection = args;
 	char *token;
+	int i;
 	bool flag;
 	char *header;
 	char *response;
+	int data = 0x0081;
+	WebsocketFrame messageFrame;
 	header =(char *) os_zalloc(strlen(pusrdata)+1);
 	strcpy(header, pusrdata);
 
 
 	if (isUpgradeable(header)) {
-		os_printf("upgradeable \n");
+		// os_printf("upgradeable \n");
 		strcpy(header, pusrdata);
 		if(handshake(header, recivedConnection)) {
-			os_printf("connection ready \n state: %d \n",recivedConnection->state);
+			// os_printf("connection ready \n state: %d \n",recivedConnection->state);
+			connection_collection = recivedConnection;
+			os_printf("connected to \""IPSTR"\" : %d \n", IP2STR(recivedConnection->proto.tcp->remote_ip), recivedConnection->proto.tcp->remote_port);
+
 		}
 
 	} else {
-		os_printf("not upgrade request \n \n");
 
-		os_printf("connection state: %d", recivedConnection->state);
+		// strcpy(header, pusrdata);
+
+		if (getMessageParameters(pusrdata, &messageFrame)) {
+			if(messageFrame.opcode == 0x01) {
+				response = (char *) os_zalloc(sizeof(char)*(messageFrame.payloadlen+1));
+				getMessage(pusrdata,&messageFrame,response);
+				os_printf("\n%s\n", response);
+
+				if (strcmpi(response, "testbw") == 0) {
+					os_timer_setfn(&testTimer, testBandwidth, NULL);
+				    os_timer_arm(&testTimer, 55, 1);
+				}
+
+				// while(!sendMessage(response, recivedConnection));
+
+				os_free(response);
+			} else if (messageFrame.opcode == 0x09) {
+				sendPong(recivedConnection);
+			} else if (messageFrame.opcode == 0x0A) {
+				os_printf("ponged\n");
+			}
+			else if(messageFrame.opcode == 0x08) {
+
+				if(closeWebsocket(recivedConnection)) {
+					connection_collection = NULL;
+					// os_printf("connection closed");
+					os_printf("connection closed to \""IPSTR"\" : %d \n", IP2STR(recivedConnection->proto.tcp->remote_ip), recivedConnection->proto.tcp->remote_port);
+				}
+			}
+
+		}
+
+		// espconn_send(recivedConnection, (char*) &data, 2);
 	}
 
 
 
 	os_free(header);
-    // espconn_send(recivedConnection, string, os_strlen(string));
 
     // espconn_disconnect(recivedConnection);
 }
 
 static void ICACHE_FLASH_ATTR dataSent (void *args) {
-	os_printf("data sent \n");
 }
 
 static void ICACHE_FLASH_ATTR connectCB (void *arg) {
@@ -69,8 +137,12 @@ void tcp_server_start () {
     espconnection.state = ESPCONN_NONE;
     espconnection.proto.tcp = &tcpconn;
 
+
     espconn_regist_connectcb(&espconnection, connectCB);
     espconn_accept(&espconnection);
+
+	os_timer_setfn(&timer_struct, ping, NULL);
+    os_timer_arm(&timer_struct, PINGDELAY, 1);
 }
 
 
